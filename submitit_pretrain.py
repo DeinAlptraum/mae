@@ -15,6 +15,7 @@ from pathlib import Path
 import main_pretrain as trainer
 import submitit
 
+SHARED_FOLDER="/mnt/data0/jannick/mae/jobdir"
 
 def parse_args():
     trainer_parser = trainer.get_args_parser()
@@ -23,6 +24,7 @@ def parse_args():
     parser.add_argument("--nodes", default=2, type=int, help="Number of nodes to request")
     parser.add_argument("--timeout", default=4320, type=int, help="Duration of the job")
     parser.add_argument("--job_dir", default="", type=str, help="Job dir. Leave empty for automatic.")
+    parser.add_argument('--local', action='store_true', help='Run training locally for testing')
 
     parser.add_argument("--partition", default="learnfair", type=str, help="Partition where to submit")
     parser.add_argument("--use_volta32", action='store_true', help="Request 32G V100 GPUs")
@@ -31,9 +33,8 @@ def parse_args():
 
 
 def get_shared_folder() -> Path:
-    user = os.getenv("USER")
-    if Path("/checkpoint/").is_dir():
-        p = Path(f"/checkpoint/{user}/experiments")
+    if Path(SHARED_FOLDER).is_dir():
+        p = Path(SHARED_FOLDER)
         p.mkdir(exist_ok=True)
         return p
     raise RuntimeError("No shared folder available")
@@ -75,7 +76,7 @@ class Trainer(object):
         from pathlib import Path
 
         job_env = submitit.JobEnvironment()
-        self.args.output_dir = Path(str(self.args.output_dir).replace("%j", str(job_env.job_id)))
+        self.args.output_dir = Path(str(self.args.output_dir)) / str(job_env.job_id)
         self.args.log_dir = self.args.output_dir
         self.args.gpu = job_env.local_rank
         self.args.rank = job_env.global_rank
@@ -84,12 +85,21 @@ class Trainer(object):
 
 
 def main():
+    with open("jnr", 'r') as f:
+        jnr = int(f.readline())
+    with open("jnr", 'w') as f:
+        f.write(str(jnr+1))
     args = parse_args()
     if args.job_dir == "":
-        args.job_dir = get_shared_folder() / "%j"
+        args.job_dir = get_shared_folder() / str(jnr)
 
     # Note that the folder will depend on the job_id, to easily track experiments
-    executor = submitit.AutoExecutor(folder=args.job_dir, slurm_max_num_timeout=30)
+    if args.local:
+        print("Submitting locally")
+        executor = submitit.LocalExecutor(folder=args.job_dir)
+    else:
+        print("Submitting to SLURM")
+        executor = submitit.AutoExecutor(folder=args.job_dir, slurm_max_num_timeout=30)
 
     num_gpus_per_node = args.ngpus
     nodes = args.nodes
@@ -123,8 +133,7 @@ def main():
     trainer = Trainer(args)
     job = executor.submit(trainer)
 
-    # print("Submitted job_id:", job.job_id)
-    print(job.job_id)
+    print("Submitted job_id:", job.job_id)
 
 
 if __name__ == "__main__":

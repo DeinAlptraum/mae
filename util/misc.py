@@ -298,7 +298,7 @@ def get_grad_norm_(parameters, norm_type: float = 2.0) -> torch.Tensor:
     return total_norm
 
 
-def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler):
+def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler, preencoder=None):
     output_dir = Path(args.output_dir)
     epoch_name = str(epoch)
     if loss_scaler is not None:
@@ -311,6 +311,8 @@ def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler):
                 'scaler': loss_scaler.state_dict(),
                 'args': args,
             }
+            if args.mask_method == "preencoder":
+                to_save["preencoder"] = preencoder.state_dict()
 
             save_on_master(to_save, checkpoint_path)
     else:
@@ -318,13 +320,15 @@ def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler):
         model.save_checkpoint(save_dir=args.output_dir, tag="checkpoint-%s" % epoch_name, client_state=client_state)
 
 
-def load_model(args, model_without_ddp, optimizer, loss_scaler):
+def load_model(args, model_without_ddp, optimizer, loss_scaler, preencoder=None):
     if args.resume:
         if args.resume.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
                 args.resume, map_location='cpu', check_hash=True)
         else:
             checkpoint = torch.load(args.resume, map_location='cpu')
+        if args.mask_method != checkpoint["args"].mask_method:
+            raise ValueError(f"Set the mask method \"{args.mask_method}\", but the checkpoint uses method \"{checkpoint['args'].mask_method}\"")
         model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
         print("Resume checkpoint %s" % args.resume)
         if 'optimizer' in checkpoint and 'epoch' in checkpoint and not (hasattr(args, 'eval') and args.eval):

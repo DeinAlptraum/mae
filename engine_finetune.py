@@ -44,6 +44,10 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
             lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
 
         samples = samples.to(device, non_blocking=True)
+        if args.mask_method == "four_channels":
+            s = samples.shape
+            mask = torch.ones((s[0], 1, s[2], s[3]), device=device)
+            samples = torch.cat((samples, mask), dim=1)
         targets = targets.to(device, non_blocking=True)
 
         if mixup_fn is not None:
@@ -93,7 +97,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 
 @torch.no_grad()
-def evaluate(data_loader, model, device):
+def evaluate(data_loader, model, device, mask_method=None):
     criterion = torch.nn.CrossEntropyLoss()
 
     metric_logger = misc.MetricLogger(delimiter="  ")
@@ -104,6 +108,10 @@ def evaluate(data_loader, model, device):
 
     for images, target in metric_logger.log_every(data_loader, 10, header):
         images = images.to(device, non_blocking=True)
+        if mask_method == "four_channels":
+            s = images.shape
+            mask = torch.ones((s[0], 1, s[2], s[3]), device=device)
+            images = torch.cat((images, mask), dim=1)
         target = target.to(device, non_blocking=True)
 
         # compute output

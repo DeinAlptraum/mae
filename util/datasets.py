@@ -10,11 +10,82 @@
 
 import os
 import PIL
+from bisect import bisect
 
 from torchvision import datasets, transforms
+from torch import cat as tcat
+from PIL import Image
 
 from timm.data import create_transform
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
+
+
+def has_masks(path):
+    if "empties" not in has_masks.__dict__:
+        root = "/".join(path.split("/")[:-2])
+        with open(root + "/emptyfiles.txt", "r") as f:
+            has_masks.empties = set([entry.strip() for entry in f.readlines()])
+    example = path.split("/")[-1]
+    return example not in has_masks.empties
+
+class MaskImageDataset(datasets.ImageFolder):
+    def __init__(
+        self,
+        img_root: str,
+        mask_root: str,
+        coverage_ratio: float,
+        common_transform = None,
+        image_transform = None,
+        **kwargs,
+    ):
+        super().__init__(img_root, is_valid_file=has_masks, **kwargs)
+        self.common_transform = common_transform
+        self.mask_root = mask_root
+        self.coverage_ratio = coverage_ratio
+        self.image_transform = image_transform
+        self.toTensor = transforms.ToTensor()
+
+    def closest_match(self, path):
+        with open(path+"/table.txt", 'r') as f:
+            masks = [entry.strip().split() for entry in f.readlines()]
+        masks = [(float(entry[0]), entry[1]) for entry in masks]
+        if self.coverage_ratio >= masks[-1][0]:
+            return masks[-1][1]
+        res = bisect(masks, (self.coverage_ratio, ''))
+        if abs(masks[res-1][0] - self.coverage_ratio) < abs(masks[res][0] - self.coverage_ratio):
+            return masks[res-1][1]
+        return masks[res][1]
+
+    def pil_loader(self, path: str, conversion_code="RGB", mask=False) -> Image.Image:
+        if mask:
+            path += "/" + self.closest_match(path)
+        # open path as file to avoid ResourceWarning (https://github.com/python-pillow/Pillow/issues/835)
+        with open(path, "rb") as f:
+            img = Image.open(f)
+            return img.convert(conversion_code)
+
+    def __getitem__(self, index: int) -> tuple:
+        path, target = self.samples[index]
+
+        img = self.pil_loader(path)
+        example = "/".join(path.split("/")[-2:])
+        
+        mask_path = self.mask_root + "/" + example[:-5]
+        mask = self.pil_loader(mask_path, 'L', True)
+
+        img = self.image_transform(self.toTensor(img))
+        mask = self.toTensor(mask)
+
+        if img.shape == (3, mask.shape[2], mask.shape[1]):
+            mask = mask.swapaxes(1,2)
+        combined = tcat((img,mask))
+        combined = self.common_transform(combined)
+        # img, mask = combined[:3], combined[3:]
+
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+
+        return combined, target
 
 
 def build_dataset(is_train, args):

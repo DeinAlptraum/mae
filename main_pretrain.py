@@ -26,6 +26,7 @@ import timm.optim.optim_factory as optim_factory
 
 import util.misc as misc
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
+from util.datasets import MaskImageDataset
 
 import models_mae
 
@@ -49,6 +50,15 @@ def get_args_parser():
 
     parser.add_argument('--mask_ratio', default=0.75, type=float,
                         help='Masking ratio (percentage of removed patches).')
+    
+    parser.add_argument('--mask_method', default='patches', type=str,
+                        help='Masking method to use (options: patches, segments, four_channels, preencoder).')
+
+    parser.add_argument('--coverage_ratio', required=True, type=float,
+                        help="Coverage ratio to strive for when selecting segmentation masks for examples")
+    
+    parser.add_argument('--decoder_depth', default=8, type=int,
+                        help="Number of layers for the MAE decoder")
 
     parser.add_argument('--norm_pix_loss', action='store_true',
                         help='Use (per-patch) normalized pixels as targets for computing loss')
@@ -116,13 +126,26 @@ def main(args):
 
     cudnn.benchmark = True
 
-    # simple augmentation
-    transform_train = transforms.Compose([
+    if args.mask_method == "patches":
+        # simple augmentation
+        transform_train = transforms.Compose([
+                transforms.RandomResizedCrop(args.input_size, scale=(0.2, 1.0), interpolation=3),  # 3 is bicubic
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+        dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
+    elif args.mask_method in ["segments", "four_channels", "preencoder"]:
+        transform1 = transforms.Compose([
             transforms.RandomResizedCrop(args.input_size, scale=(0.2, 1.0), interpolation=3),  # 3 is bicubic
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
-    dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
+            transforms.RandomHorizontalFlip()])
+        transform2 = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        mask_path = os.path.join(args.data_path, 'masks')
+        dataset_train = MaskImageDataset(
+            os.path.join(args.data_path, 'train'),
+            mask_root=mask_path,
+            coverage_ratio=args.coverage_ratio,
+            common_transform=transform1,
+            image_transform=transform2,)
     print(dataset_train)
 
     num_tasks = misc.get_world_size()
@@ -150,7 +173,15 @@ def main(args):
     )
     
     # define the model
-    model = models_mae.__dict__[args.model](norm_pix_loss=args.norm_pix_loss)
+    if args.mask_method in ["patches", "segments", "preencoder"]:
+        model = models_mae.__dict__[args.model](norm_pix_loss=args.norm_pix_loss, mask_method=args.mask_method, decoder_depth=args.decoder_depth)
+    elif args.mask_method == "four_channels":
+        model = models_mae.__dict__[args.model](norm_pix_loss=args.norm_pix_loss, mask_method=args.mask_method, in_chans=4, decoder_depth=args.decoder_depth)
+
+    preencoder = None
+    if args.mask_method == "preencoder":
+        preencoder = torch.nn.Conv2d(in_channels=4, out_channels=3, kernel_size=16, padding="same")
+        preencoder.to(device)
 
     model.to(device)
 
@@ -178,7 +209,7 @@ def main(args):
     print(optimizer)
     loss_scaler = NativeScaler()
 
-    misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
+    misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler, preencoder=preencoder)
 
     print(f"Start training for {args.epochs} epochs")
     if log_writer is not None:
@@ -191,12 +222,12 @@ def main(args):
             model, data_loader_train,
             optimizer, device, epoch, loss_scaler,
             log_writer=log_writer,
-            args=args
+            args=args, preencoder=preencoder
         )
         if args.output_dir and (epoch % 20 == 0 or epoch + 1 == args.epochs):
             misc.save_model(
                 args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                loss_scaler=loss_scaler, epoch=epoch)
+                loss_scaler=loss_scaler, epoch=epoch, preencoder=preencoder)
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                         'epoch': epoch,}
@@ -216,7 +247,7 @@ if __name__ == '__main__':
     args = get_args_parser()
     args = args.parse_args()
     if args.mask_method not in ["patches", "segments", "four_channels", "preencoder"]:
-        print("Unknown mask method \"{args.segment_method}\". Expected one of \"patches\", \"segments\", \"four_channels\", \"preencoder\"")
+        print(f"Unknown mask method \"{args.mask_method}\". Expected one of \"patches\", \"segments\", \"four_channels\", \"preencoder\"")
         exit(1)
     if args.output_dir == "./output_dir":
         with open("jnr", 'r') as f:

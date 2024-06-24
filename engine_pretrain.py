@@ -22,7 +22,7 @@ def train_one_epoch(model: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, loss_scaler,
                     log_writer=None,
-                    args=None):
+                    args=None, preencoder=None):
     model.train(True)
     metric_logger = misc.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', misc.SmoothedValue(window_size=1, fmt='{value:.6f}'))
@@ -41,8 +41,13 @@ def train_one_epoch(model: torch.nn.Module,
 
         samples = samples.to(device, non_blocking=True)
 
+        masks = None
         with torch.cuda.amp.autocast():
-            loss, _, _ = model(samples, mask_ratio=args.mask_ratio)
+            if args.mask_method == "preencoder":
+                masks = samples[:,3:]
+                samples[:,:3] = samples[:,:3] * (1-masks)
+                samples = preencoder(samples)
+            loss, _, _ = model(samples, mask_ratio=args.mask_ratio, masks=masks)
 
         loss_value = loss.item()
 
