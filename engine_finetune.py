@@ -37,9 +37,6 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
     optimizer.zero_grad()
 
-    if log_writer is not None:
-        print('log_dir: {}'.format(log_writer.log_dir))
-
     for data_iter_step, (samples, targets) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
 
         # we use a per iteration (instead of per epoch) lr scheduler
@@ -105,9 +102,7 @@ def evaluate(data_loader, model, device):
     # switch to evaluation mode
     model.eval()
 
-    for batch in metric_logger.log_every(data_loader, 10, header):
-        images = batch[0]
-        target = batch[-1]
+    for images, target in metric_logger.log_every(data_loader, 10, header):
         images = images.to(device, non_blocking=True)
         target = target.to(device, non_blocking=True)
 

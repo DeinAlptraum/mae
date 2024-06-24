@@ -18,7 +18,7 @@ from pathlib import Path
 
 import torch
 import torch.distributed as dist
-from torch._six import inf
+from torch import inf
 
 
 class SmoothedValue(object):
@@ -214,6 +214,12 @@ def save_on_master(*args, **kwargs):
 
 
 def init_distributed_mode(args):
+    # Avoid DDP
+    print('Not using distributed mode')
+    setup_for_distributed(is_master=True)  # hack
+    args.distributed = False
+    return
+
     if args.dist_on_itp:
         args.rank = int(os.environ['OMPI_COMM_WORLD_RANK'])
         args.world_size = int(os.environ['OMPI_COMM_WORLD_SIZE'])
@@ -319,7 +325,7 @@ def load_model(args, model_without_ddp, optimizer, loss_scaler):
                 args.resume, map_location='cpu', check_hash=True)
         else:
             checkpoint = torch.load(args.resume, map_location='cpu')
-        model_without_ddp.load_state_dict(checkpoint['model'])
+        model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
         print("Resume checkpoint %s" % args.resume)
         if 'optimizer' in checkpoint and 'epoch' in checkpoint and not (hasattr(args, 'eval') and args.eval):
             optimizer.load_state_dict(checkpoint['optimizer'])
