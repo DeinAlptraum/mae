@@ -112,10 +112,12 @@ def get_args_parser():
 
 
 def main(args):
+    if args.output_dir:
+        Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     misc.init_distributed_mode(args)
 
-    print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
-    print("{}".format(args).replace(', ', ',\n'))
+    # print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
+    # print("{}".format(args).replace(', ', ',\n'))
 
     device = torch.device(args.device)
 
@@ -146,7 +148,7 @@ def main(args):
             coverage_ratio=args.coverage_ratio,
             common_transform=transform1,
             image_transform=transform2,)
-    print(dataset_train)
+    # print(dataset_train)
 
     num_tasks = misc.get_world_size()
     global_rank = misc.get_rank()
@@ -154,16 +156,14 @@ def main(args):
         sampler_train = torch.utils.data.DistributedSampler(
             dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
         )
-        print("Sampler_train = %s" % str(sampler_train))
+        # print("Sampler_train = %s" % str(sampler_train))
     else:
         sampler_train = torch.utils.data.RandomSampler(dataset_train)
-
     if global_rank == 0 and args.log_dir is not None:
         os.makedirs(args.log_dir, exist_ok=True)
         log_writer = SummaryWriter(log_dir=args.log_dir)
     else:
         log_writer = None
-
     data_loader_train = torch.utils.data.DataLoader(
         dataset_train, sampler=sampler_train,
         batch_size=args.batch_size,
@@ -186,34 +186,35 @@ def main(args):
     model.to(device)
 
     model_without_ddp = model
-    print("Model = %s" % str(model_without_ddp))
+    # print("Model = %s" % str(model_without_ddp))
 
     eff_batch_size = args.batch_size * args.accum_iter * misc.get_world_size()
     
     if args.lr is None:  # only base_lr is specified
         args.lr = args.blr * eff_batch_size / 256
 
-    print("base lr: %.2e" % (args.lr * 256 / eff_batch_size))
-    print("actual lr: %.2e" % args.lr)
+    # print("base lr: %.2e" % (args.lr * 256 / eff_batch_size))
+    # print("actual lr: %.2e" % args.lr)
 
-    print("accumulate grad iterations: %d" % args.accum_iter)
-    print("effective batch size: %d" % eff_batch_size)
+    # print("accumulate grad iterations: %d" % args.accum_iter)
+    # print("effective batch size: %d" % eff_batch_size)
 
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
         model_without_ddp = model.module
     
     # following timm: set wd as 0 for bias and norm layers
-    param_groups = optim_factory.param_groups_weight_decay(model_without_ddp, args.weight_decay)
+    param_groups = optim_factory.add_weight_decay(model_without_ddp, args.weight_decay)
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
-    print(optimizer)
+    # print(optimizer)
     loss_scaler = NativeScaler()
 
     misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler, preencoder=preencoder)
 
-    print(f"Start training for {args.epochs} epochs")
+    # print(f"Start training for {args.epochs} epochs")
     if log_writer is not None:
-        print('log_dir: {}'.format(log_writer.log_dir))
+        pass
+        # print('log_dir: {}'.format(log_writer.log_dir))
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
@@ -224,7 +225,7 @@ def main(args):
             log_writer=log_writer,
             args=args, preencoder=preencoder
         )
-        if args.output_dir and (epoch % 20 == 0 or epoch + 1 == args.epochs):
+        if args.output_dir and (epoch + 1 == args.epochs):
             misc.save_model(
                 args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                 loss_scaler=loss_scaler, epoch=epoch, preencoder=preencoder)
@@ -235,7 +236,7 @@ def main(args):
         if args.output_dir and misc.is_main_process():
             if log_writer is not None:
                 log_writer.flush()
-            with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
+            with open(os.path.join(args.output_dir, f"log.txt"), mode="a", encoding="utf-8") as f:
                 f.write(json.dumps(log_stats) + "\n")
 
     total_time = time.time() - start_time
@@ -249,13 +250,14 @@ if __name__ == '__main__':
     if args.mask_method not in ["patches", "segments", "four_channels", "preencoder"]:
         print(f"Unknown mask method \"{args.mask_method}\". Expected one of \"patches\", \"segments\", \"four_channels\", \"preencoder\"")
         exit(1)
-    if args.output_dir == "./output_dir":
-        with open("jnr", 'r') as f:
-            jnr = int(f.readline())
-        with open("jnr", 'w') as f:
-            f.write(str(jnr+1))
-        args.output_dir = "jobdir/" + str(jnr)
-        args.log_dir = args.output_dir
-    if args.output_dir:
-        Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    args.output_dir = Path(args.output_dir) / args.mask_method
+    # if args.output_dir == "./output_dir":
+    #     with open("jnr", 'r') as f:
+    #         jnr = int(f.readline())
+    #     with open("jnr", 'w') as f:
+    #         f.write(str(jnr+1))
+    #     args.output_dir = "jobdir/" + str(jnr)
+    #     args.log_dir = args.output_dir
+    #if args.output_dir:
+    #    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     main(args)
