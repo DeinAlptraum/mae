@@ -19,6 +19,16 @@ from timm.models.vision_transformer import PatchEmbed, Block
 from util.pos_embed import get_2d_sincos_pos_embed
 
 
+class CombinedModel(nn.Module):
+    def __init__(self, preencoder, model):
+        super().__init__()
+        self.model = model
+        self.encoder = preencoder
+
+    def forward(self, imgs, mask_ratio=0.75, masks=None):
+        return self.model(self.encoder(imgs), mask_ratio, masks)
+
+
 class MaskedAutoencoderViT(nn.Module):
     """ Masked Autoencoder with VisionTransformer backbone
     """

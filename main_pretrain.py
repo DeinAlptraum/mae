@@ -21,6 +21,7 @@ import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
+import torch.distributed as dist
 
 import timm.optim.optim_factory as optim_factory
 
@@ -116,9 +117,6 @@ def main(args):
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     misc.init_distributed_mode(args)
 
-    # print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
-    # print("{}".format(args).replace(', ', ',\n'))
-
     device = torch.device(args.device)
 
     # fix the seed for reproducibility
@@ -148,7 +146,6 @@ def main(args):
             coverage_ratio=args.coverage_ratio,
             common_transform=transform1,
             image_transform=transform2,)
-    # print(dataset_train)
 
     num_tasks = misc.get_world_size()
     global_rank = misc.get_rank()
@@ -156,10 +153,9 @@ def main(args):
         sampler_train = torch.utils.data.DistributedSampler(
             dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
         )
-        # print("Sampler_train = %s" % str(sampler_train))
     else:
         sampler_train = torch.utils.data.RandomSampler(dataset_train)
-    if global_rank == 0 and args.log_dir is not None:
+    if global_rank == 0 and args.log_dir:
         os.makedirs(args.log_dir, exist_ok=True)
         log_writer = SummaryWriter(log_dir=args.log_dir)
     else:
@@ -178,26 +174,18 @@ def main(args):
     elif args.mask_method == "four_channels":
         model = models_mae.__dict__[args.model](norm_pix_loss=args.norm_pix_loss, mask_method=args.mask_method, in_chans=4, decoder_depth=args.decoder_depth)
 
-    preencoder = None
     if args.mask_method == "preencoder":
         preencoder = torch.nn.Conv2d(in_channels=4, out_channels=3, kernel_size=16, padding="same")
-        preencoder.to(device)
+        model = models_mae.CombinedModel(preencoder, model)
 
     model.to(device)
 
     model_without_ddp = model
-    # print("Model = %s" % str(model_without_ddp))
 
     eff_batch_size = args.batch_size * args.accum_iter * misc.get_world_size()
     
     if args.lr is None:  # only base_lr is specified
         args.lr = args.blr * eff_batch_size / 256
-
-    # print("base lr: %.2e" % (args.lr * 256 / eff_batch_size))
-    # print("actual lr: %.2e" % args.lr)
-
-    # print("accumulate grad iterations: %d" % args.accum_iter)
-    # print("effective batch size: %d" % eff_batch_size)
 
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
@@ -209,12 +197,9 @@ def main(args):
     # print(optimizer)
     loss_scaler = NativeScaler()
 
-    misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler, preencoder=preencoder)
+    misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
 
     # print(f"Start training for {args.epochs} epochs")
-    if log_writer is not None:
-        pass
-        # print('log_dir: {}'.format(log_writer.log_dir))
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
@@ -223,12 +208,12 @@ def main(args):
             model, data_loader_train,
             optimizer, device, epoch, loss_scaler,
             log_writer=log_writer,
-            args=args, preencoder=preencoder
+            args=args
         )
         if args.output_dir and (epoch + 1 == args.epochs):
             misc.save_model(
                 args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                loss_scaler=loss_scaler, epoch=epoch, preencoder=preencoder)
+                loss_scaler=loss_scaler, epoch=epoch)
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                         'epoch': epoch,}
@@ -242,6 +227,8 @@ def main(args):
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
+    if args.distributed:
+        dist.destroy_process_group()
 
 
 if __name__ == '__main__':
