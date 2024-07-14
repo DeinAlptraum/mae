@@ -54,6 +54,9 @@ def get_args_parser():
     
     parser.add_argument('--mask_method', default='patches', type=str,
                         help='Masking method to use (options: patches, segments, four_channels, preencoder).')
+    
+    parser.add_argument('--stack', action='store_true',
+                        help='Keep pretraining an existing checkpoint with a different mask method')
 
     parser.add_argument('--coverage_ratio', required=True, type=float,
                         help="Coverage ratio to strive for when selecting segmentation masks for examples")

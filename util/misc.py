@@ -312,6 +312,28 @@ def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler):
         client_state = {'epoch': epoch}
         model.save_checkpoint(save_dir=args.output_dir, tag=f"checkpoint-{epoch}", client_state=client_state)
 
+def translate_pretrained_checkpoint(ckp, model, mask_method):
+    prefix = ""
+    if mask_method == "preencoder":
+        prefix = "model."
+
+    # Add missing decoder/mask_token parameters
+    std = model.state_dict()
+    for key in std:
+        if key == f"{prefix}mask_token" or key.startswith(f"{prefix}decoder_"):
+            ckp[key[len(prefix):]] = std[key]
+
+    # Add "model." prefix for the combined model
+    if mask_method == "preencoder":
+        for key in list(ckp.keys()):
+            ckp[f"model.{key}"] = ckp.pop(key)
+        ckp["encoder.weight"] = std["encoder.weight"]
+        ckp["encoder.bias"] = std["encoder.bias"]
+
+    # For four channels, expand the input dimension
+    if mask_method == "four_channels":
+        ckp["patch_embed.proj.weight"] = torch.cat((ckp["patch_embed.proj.weight"], std["patch_embed.proj.weight"][:,3:4].to("cpu")), dim=1)
+
 
 def load_model(args, model_without_ddp, optimizer, loss_scaler):
     if args.resume:
@@ -320,9 +342,11 @@ def load_model(args, model_without_ddp, optimizer, loss_scaler):
                 args.resume, map_location='cpu', check_hash=True)
         else:
             checkpoint = torch.load(args.resume, map_location='cpu')
-        if args.mask_method != checkpoint["args"].mask_method:
+        if not args.stack and args.mask_method != checkpoint["args"].mask_method:
             raise ValueError(f"Set the mask method \"{args.mask_method}\", but the checkpoint uses method \"{checkpoint['args'].mask_method}\"")
-        model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
+        if args.stack:
+            translate_pretrained_checkpoint(checkpoint['model'], model_without_ddp, args.mask_method)
+        model_without_ddp.load_state_dict(checkpoint['model'])
         print("Resume checkpoint %s" % args.resume)
         if 'optimizer' in checkpoint and 'epoch' in checkpoint and not (hasattr(args, 'eval') and args.eval):
             optimizer.load_state_dict(checkpoint['optimizer'])
