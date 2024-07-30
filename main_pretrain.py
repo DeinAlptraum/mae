@@ -240,14 +240,4 @@ if __name__ == '__main__':
     if args.mask_method not in ["patches", "segments", "four_channels", "preencoder"]:
         print(f"Unknown mask method \"{args.mask_method}\". Expected one of \"patches\", \"segments\", \"four_channels\", \"preencoder\"")
         exit(1)
-    args.output_dir = Path(args.output_dir) / args.mask_method
-    # if args.output_dir == "./output_dir":
-    #     with open("jnr", 'r') as f:
-    #         jnr = int(f.readline())
-    #     with open("jnr", 'w') as f:
-    #         f.write(str(jnr+1))
-    #     args.output_dir = "jobdir/" + str(jnr)
-    #     args.log_dir = args.output_dir
-    #if args.output_dir:
-    #    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     main(args)
