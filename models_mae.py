@@ -26,7 +26,12 @@ class CombinedModel(nn.Module):
         self.encoder = preencoder
 
     def forward(self, imgs, mask_ratio=0.75, masks=None):
-        return self.model(self.encoder(imgs), mask_ratio, masks)
+        samples = imgs.clone()
+        masks = samples[:,3:]
+        samples[:,:3] = samples[:,:3] * (1-masks)
+        _, pred, _ = self.model(self.encoder(samples), mask_ratio)
+        loss = self.model.forward_loss(imgs, pred, masks)
+        return loss, pred, masks
 
 
 class MaskedAutoencoderViT(nn.Module):
@@ -225,7 +230,7 @@ class MaskedAutoencoderViT(nn.Module):
         pred: [N, L, p*p*3]
         mask: [N, L], 0 is keep, 1 is remove, 
         """
-        if self.mask_method in ["segments", "four_channels"]:
+        if self.mask_method in ["segments", "four_channels", "preencoder"]:
             target = self.patchify(imgs[:,:3])
         else:
             target = self.patchify(imgs)
@@ -244,12 +249,14 @@ class MaskedAutoencoderViT(nn.Module):
         loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
         return loss
 
-    def forward(self, imgs, mask_ratio=0.75, masks=None):
-        latent, mask, ids_restore = self.forward_encoder(imgs, mask_ratio)
-        if self.mask_method == "preencoder":
-            mask = masks
+    def forward(self, imgs, mask_ratio=0.75):
+        latent, mask, ids_restore = self.forward_encoder(imgs.clone(), mask_ratio)
         pred = self.forward_decoder(latent, ids_restore)  # [N, L, p*p*3]
-        loss = self.forward_loss(imgs, pred, mask)
+        if self.mask_method == "preencoder":
+            mask = None
+            loss = None
+        else:
+            loss = self.forward_loss(imgs, pred, mask)
         return loss, pred, mask
 
 
